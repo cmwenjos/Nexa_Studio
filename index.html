@@ -1731,36 +1731,48 @@
 
     document.getElementById('auth-login-form')?.addEventListener('submit', function(e) {
       e.preventDefault();
-      const email = document.getElementById('login-email').value.trim().toLowerCase();
+      const rawEmail = document.getElementById('login-email').value.trim().toLowerCase();
       const pass = document.getElementById('login-password').value.trim();
 
-      if (email === MASTER_EMAIL && pass === MASTER_PASS) {
-        currentUser = { id: 'master-admin', role: 'master', name: 'Master Admin', email };
+      if (rawEmail === MASTER_EMAIL.toLowerCase() && pass === MASTER_PASS) {
+        currentUser = { id: 'master-admin', role: 'master', name: 'Master Admin', email: MASTER_EMAIL };
         saveAuthSession();
         closeAuthModal();
+        closeClientPortalModal();
         showToast('Welcome back, Master Admin! Master Portal & Customer View unlocked.', 'success');
         switchPortalView('master');
-      } else {
-        const registeredMatch = registeredUsers.find(u => u.email.toLowerCase() === email);
-        if (registeredMatch && registeredMatch.password && registeredMatch.password !== pass) {
-          showToast('Incorrect password for this client account. Please check your credentials.', 'info');
-          return;
-        }
-        const displayName = registeredMatch?.name || email.split('@')[0] || 'Client';
-        const userRecord = upsertRegisteredUser(displayName, email, registeredMatch?.phone || '', pass);
-        currentUser = {
-          id: userRecord?.id || ('usr-' + Date.now()),
-          role: 'client',
-          name: userRecord?.name || displayName,
-          email,
-          phone: userRecord?.phone || ''
-        };
-        saveAuthSession();
-        closeAuthModal();
-        renderClientWidgetChat();
-        openClientPortalModal();
-        showToast(`Signed in as ${currentUser.name}! Welcome to your Client Portal.`, 'success');
+        return;
       }
+
+      if (rawEmail === MASTER_EMAIL.toLowerCase() && pass !== MASTER_PASS) {
+        showToast('Incorrect Master Admin password. Please double-check and try again.', 'info');
+        return;
+      }
+
+      const registeredMatch = registeredUsers.find(u => u.email.toLowerCase() === rawEmail);
+      if (!registeredMatch) {
+        showToast('No account found with that email. Use "Guest Sign Up" to register or check your email.', 'info');
+        return;
+      }
+
+      if (registeredMatch.password && registeredMatch.password !== pass) {
+        showToast('Incorrect password for this client account. Please check your credentials.', 'info');
+        return;
+      }
+
+      currentUser = {
+        id: registeredMatch.id,
+        role: 'client',
+        name: registeredMatch.name,
+        email: registeredMatch.email,
+        phone: registeredMatch.phone || ''
+      };
+      saveAuthSession();
+      closeAuthModal();
+      closeAdminModal();
+      renderClientWidgetChat();
+      openClientPortalModal();
+      showToast(`Signed in as ${currentUser.name}! Welcome to your Client Portal.`, 'success');
     });
 
     document.getElementById('auth-signup-form')?.addEventListener('submit', function(e) {
@@ -2626,6 +2638,8 @@
     }
 
     let discoveryStep = 0;
+    let discoveryMaxUnlockedStep = 0;
+    let discoveryEditReturnStep = null;
     let discoverySubmitted = false;
 
     const discoverySectionsMeta = [
@@ -2727,9 +2741,29 @@
     }
 
     function jumpToDiscoveryStep(idx) {
+      if (idx > discoveryMaxUnlockedStep) return;
       discoverySubmitted = false;
+      if (idx !== discoveryStep && discoveryEditReturnStep === null && discoveryStep > idx) {
+        discoveryEditReturnStep = discoveryStep;
+      } else if (idx === discoveryEditReturnStep) {
+        discoveryEditReturnStep = null;
+      }
       discoveryStep = idx;
       renderDiscoveryWizard();
+    }
+
+    function saveDiscoveryEditsAndReturn() {
+      if (discoveryStep === 0) {
+        if (!discoveryData.fullName.trim() || !discoveryData.email.trim() || !discoveryData.phone.trim()) {
+          showToast('Please enter your Name, Email, and WhatsApp/Phone number before saving edits.', 'info');
+          return;
+        }
+      }
+      const targetStep = discoveryEditReturnStep !== null ? discoveryEditReturnStep : discoveryMaxUnlockedStep;
+      discoveryEditReturnStep = null;
+      discoveryStep = targetStep;
+      renderDiscoveryWizard();
+      showToast('Section edits saved!', 'success');
     }
 
     function prevDiscoveryStep() {
@@ -2748,6 +2782,9 @@
       }
       if (discoveryStep < discoverySectionsMeta.length - 1) {
         discoveryStep++;
+        if (discoveryStep > discoveryMaxUnlockedStep) {
+          discoveryMaxUnlockedStep = discoveryStep;
+        }
         renderDiscoveryWizard();
       }
     }
@@ -2920,15 +2957,21 @@
       if (miniTitleEl) miniTitleEl.textContent = `${meta.num} • ${meta.title}`;
 
       if (pillsContainer) {
-        pillsContainer.innerHTML = discoverySectionsMeta.map((s, idx) => {
-          const isCurrent = idx === discoveryStep && !discoverySubmitted;
-          const isPast = idx < discoveryStep || discoverySubmitted;
-          return `
-            <button type="button" onclick="jumpToDiscoveryStep(${idx})" class="shrink-0 px-3 py-1.5 rounded-full text-[11px] font-bold transition-all border ${isCurrent ? 'bg-sky-500 text-slate-950 border-sky-400' : isPast ? 'bg-emerald-500/15 text-emerald-300 border-emerald-400/35' : 'bg-slate-900/80 text-slate-400 border-sky-400/20 hover:text-white'}">
-              ${s.num} ${s.title}
-            </button>
-          `;
-        }).join('');
+        if (discoveryMaxUnlockedStep === 0 && !discoverySubmitted) {
+          pillsContainer.classList.add('hidden');
+          pillsContainer.innerHTML = '';
+        } else {
+          pillsContainer.classList.remove('hidden');
+          const unlockedSections = discoverySectionsMeta.slice(0, discoveryMaxUnlockedStep + 1);
+          pillsContainer.innerHTML = unlockedSections.map((s, idx) => {
+            const isCurrent = idx === discoveryStep && !discoverySubmitted;
+            return `
+              <button type="button" onclick="jumpToDiscoveryStep(${idx})" title="Click to edit ${s.title}" class="shrink-0 px-3 py-1.5 rounded-full text-[11px] font-bold transition-all border ${isCurrent ? 'bg-sky-500 text-slate-950 border-sky-400' : 'bg-emerald-500/15 text-emerald-300 border-emerald-400/35 hover:bg-emerald-500/25'}">
+                ${isCurrent ? '✎' : '✔'} ${s.num} ${s.title}
+              </button>
+            `;
+          }).join('');
+        }
       }
 
       if (discoverySubmitted) {
@@ -2956,12 +2999,32 @@
         return;
       }
 
+      const isEditingPrevious = discoveryEditReturnStep !== null && discoveryStep < discoveryEditReturnStep;
+
       if (prevBtn) {
         prevBtn.classList.remove('hidden');
         prevBtn.disabled = discoveryStep === 0;
       }
-      if (nextBtn) nextBtn.classList.toggle('hidden', discoveryStep === discoverySectionsMeta.length - 1);
-      if (submitBtn) submitBtn.classList.toggle('hidden', discoveryStep !== discoverySectionsMeta.length - 1);
+      if (nextBtn) {
+        nextBtn.classList.toggle('hidden', isEditingPrevious || discoveryStep === discoverySectionsMeta.length - 1);
+      }
+      if (submitBtn) {
+        submitBtn.classList.toggle('hidden', isEditingPrevious || discoveryStep !== discoverySectionsMeta.length - 1);
+      }
+
+      let saveEditsBtn = document.getElementById('btn-discovery-save-edits');
+      if (!saveEditsBtn && nextBtn && nextBtn.parentElement) {
+        saveEditsBtn = document.createElement('button');
+        saveEditsBtn.type = 'button';
+        saveEditsBtn.id = 'btn-discovery-save-edits';
+        saveEditsBtn.onclick = saveDiscoveryEditsAndReturn;
+        saveEditsBtn.className = 'hidden px-6 py-2.5 rounded-full bg-gradient-to-r from-amber-400 to-orange-500 text-slate-950 font-display font-bold text-xs sm:text-sm shadow-lg inline-flex items-center gap-1.5 hover:brightness-110 transition-all';
+        saveEditsBtn.innerHTML = `<i data-lucide="check" class="w-4 h-4"></i><span>Save Edits & Return</span>`;
+        nextBtn.parentElement.insertBefore(saveEditsBtn, nextBtn);
+      }
+      if (saveEditsBtn) {
+        saveEditsBtn.classList.toggle('hidden', !isEditingPrevious);
+      }
 
       let stepHTML = `
         <div class="mb-5 pb-3 border-b border-sky-400/15">
@@ -4881,19 +4944,53 @@
       const safeFileName = `NexaStudio_Invoice_${(activeInvoice.clientName || 'Client').replace(/[^a-z0-9]/gi, '_')}_${activeInvoice.invoiceNumber}.pdf`;
 
       if (typeof html2pdf !== 'undefined') {
-        showToast('Generating NexaStudio PDF invoice...', 'info');
+        showToast('Generating 1-page NexaStudio PDF invoice...', 'info');
+
+        // Clone into an isolated A4-width wrapper at top-left so modal scroll never creates extra blank pages
+        const wrapper = document.createElement('div');
+        wrapper.style.position = 'fixed';
+        wrapper.style.left = '0';
+        wrapper.style.top = '0';
+        wrapper.style.width = '794px';
+        wrapper.style.zIndex = '-9999';
+        wrapper.style.background = '#04091a';
+        wrapper.style.padding = '16px';
+
+        const clone = element.cloneNode(true);
+        clone.style.width = '100%';
+        clone.style.margin = '0';
+        clone.style.boxShadow = 'none';
+        wrapper.appendChild(clone);
+        document.body.appendChild(wrapper);
+
         const opt = {
-          margin: [8, 8, 8, 8],
+          margin: 0,
           filename: safeFileName,
           image: { type: 'jpeg', quality: 0.98 },
-          html2canvas: { scale: 2, useCORS: true, backgroundColor: '#04091a' },
-          jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+          html2canvas: {
+            scale: 2,
+            useCORS: true,
+            backgroundColor: '#04091a',
+            scrollX: 0,
+            scrollY: 0,
+            windowWidth: 794
+          },
+          jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+          pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
         };
-        html2pdf().set(opt).from(element).save().then(() => {
-          showToast(`Saved "${safeFileName}"!`, 'success');
-        }).catch(() => {
-          window.print();
-        });
+
+        html2pdf()
+          .set(opt)
+          .from(wrapper)
+          .save()
+          .then(() => {
+            wrapper.remove();
+            showToast(`Saved "${safeFileName}" (1 Page)!`, 'success');
+          })
+          .catch(() => {
+            wrapper.remove();
+            window.print();
+          });
       } else {
         window.print();
       }
